@@ -31,7 +31,7 @@ Download `SpatialRealSDK.xcframework` from [Releases](https://github.com/Spatial
 
 ## Requirements
 
-- iOS 16.0 or later, on an A11 chip or newer; the simulator works for everything except the microphone
+- iOS 16.0 or later, on an A11 chip or newer; the simulator works on a Mac with Apple silicon, for everything except the microphone
 - Xcode 16 or later (Swift 6)
 
 ## Getting started
