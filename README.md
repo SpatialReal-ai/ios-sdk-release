@@ -22,7 +22,7 @@ targets: [
 ### CocoaPods
 
 ```ruby
-pod 'SpatialRealSDK', :git => 'https://github.com/SpatialReal-ai/ios-sdk-release.git'
+pod 'SpatialRealSDK', :podspec => 'https://raw.githubusercontent.com/SpatialReal-ai/ios-sdk-release/main/SpatialRealSDK.podspec'
 ```
 
 ### XCFramework
