@@ -12,7 +12,7 @@ In Xcode, choose **File → Add Package Dependencies…**, enter `https://github
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SpatialReal-ai/ios-sdk-release.git", from: "1.0.0-beta.1")
+    .package(url: "https://github.com/SpatialReal-ai/ios-sdk-release.git", from: "1.0.0-beta.2")
 ],
 targets: [
     .target(name: "YourApp", dependencies: [.product(name: "SpatialRealSDK", package: "ios-sdk-release")])
