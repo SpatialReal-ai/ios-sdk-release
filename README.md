@@ -12,12 +12,34 @@ In Xcode, choose **File → Add Package Dependencies…**, enter `https://github
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SpatialReal-ai/ios-sdk-release.git", from: "1.0.0-beta.2")
+    .package(url: "https://github.com/SpatialReal-ai/ios-sdk-release.git", from: "1.0.0-beta.3")
 ],
 targets: [
     .target(name: "YourApp", dependencies: [.product(name: "SpatialRealSDK", package: "ios-sdk-release")])
 ]
 ```
+
+### LiveKit route
+
+If your agent runs in a LiveKit room (for example with [livekit-plugins-spatialreal](https://github.com/SpatialReal-ai/livekit-plugins-spatialreal)), add the **SpatialRealLiveKit** product as well. It is a source target in this package: it depends on `SpatialRealSDK` and on [livekit/client-sdk-swift](https://github.com/livekit/client-sdk-swift), so only add it when you need it.
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SpatialRealSDK", package: "ios-sdk-release"),
+    .product(name: "SpatialRealLiveKit", package: "ios-sdk-release")
+])
+```
+
+```swift
+import SpatialRealLiveKit
+
+let session = try await sr.createSession(LiveKitAvatarSessionOptions(
+    avatarId: avatarId, credential: sessionToken, container: containerView,
+    livekit: LiveKitConnection(url: livekitURL, token: livekitToken)))
+try await session.start()      // joins the room; the avatar's audio and animation arrive on its tracks
+```
+
+The LiveKit route is SwiftPM only (not in the CocoaPods spec).
 
 ### CocoaPods
 
