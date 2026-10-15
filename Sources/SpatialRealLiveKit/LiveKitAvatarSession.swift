@@ -78,6 +78,21 @@ public extension SpatialReal {
     private var lastPacketAt: TimeInterval = 0
     private var errorListeners: [UUID: (SpatialRealError) -> Void] = [:]
 
+    // 诊断计数(真机排障用,demo 定时打印)
+    var dbgPackets = 0, dbgContentPackets = 0, dbgIdlePackets = 0, dbgAudioChunks = 0
+    var dbgAudioYielded = 0, dbgFramesYielded = 0, dbgTurns = 0
+    var dbgLastError: String?
+
+    /// 一行状态:房间、绑定的形象、各通道的计数。给 demo / 日志用,格式不保证稳定。
+    public func debugSnapshot() -> String {
+        let parts = room.remoteParticipants.keys.map(\.stringValue)
+        var s = "room=\(room.connectionState) participants=\(parts) bound=\(boundIdentity ?? "-") audioTrack=\(audioTrack != nil) "
+        s += "packets=\(dbgPackets) (content=\(dbgContentPackets) idle=\(dbgIdlePackets)) audioChunks=\(dbgAudioChunks) "
+        s += "gateOpen=\(gate.isOpen) turns=\(dbgTurns) yielded(audio=\(dbgAudioYielded) frames=\(dbgFramesYielded)) host=\(host.state)"
+        if let e = dbgLastError { s += " lastError=\(e)" }
+        return s
+    }
+
     init(host: HostAvatarSession, options: LiveKitAvatarSessionOptions) {
         self.host = host
         self.options = options
@@ -186,11 +201,15 @@ public extension SpatialReal {
     private func handle(_ ev: RoomEvent) {
         switch ev {
         case let .audio(pcm):
+            dbgAudioChunks += 1
             gate.audio(pcm)
         case let .data(participant, topic, data):
             guard topic == Self.animationTopic, isAvatar(participant), isBoundOrFree(participant) else { return }
             if boundIdentity == nil { boundIdentity = identity(participant) }
             lastPacketAt = Date().timeIntervalSince1970
+            dbgPackets += 1
+            let f = data.count >= 5 ? Int(data[data.startIndex]) : 0
+            if f & PacketFlag.idle != 0 { dbgIdlePackets += 1 } else if f & (PacketFlag.transition | PacketFlag.transitionEnd) == 0 { dbgContentPackets += 1 }
             if let d = decoder.decode(data) {
                 if d.resync { gate.reset() }
                 gate.frame(d.flags, d.messages)
@@ -280,6 +299,7 @@ public extension SpatialReal {
         func open() {
             audioStarted = false
             pending.removeAll()
+            session.dbgTurns += 1
         }
 
         func audio(_ pcm: Data, end: Bool) {
@@ -287,7 +307,9 @@ public extension SpatialReal {
             guard session.host.state == .live else { return }
             do {
                 try session.host.yieldAudioData(pcm, end: end)
+                session.dbgAudioYielded += 1
             } catch {
+                session.dbgLastError = "yieldAudioData: \(error.localizedDescription)"
                 session.logger.warning("yieldAudioData: \(error.localizedDescription, privacy: .public)")
                 return
             }
@@ -308,7 +330,13 @@ public extension SpatialReal {
                 return
             }
             guard session.host.state == .live else { return }
-            do { try session.host.yieldFramesData(messages) } catch { session.logger.warning("yieldFramesData: \(error.localizedDescription, privacy: .public)") }
+            do {
+                try session.host.yieldFramesData(messages)
+                session.dbgFramesYielded += messages.count
+            } catch {
+                session.dbgLastError = "yieldFramesData: \(error.localizedDescription)"
+                session.logger.warning("yieldFramesData: \(error.localizedDescription, privacy: .public)")
+            }
         }
 
         func close() {

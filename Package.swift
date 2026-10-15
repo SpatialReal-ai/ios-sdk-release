@@ -30,8 +30,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "SpatialRealSDK",
-            url: "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.3/SpatialRealSDK_202610072318.zip",
-            checksum: "8b67c7fdafe5cd92134ef8770c1909f11c77446a884860d7cab393b6f982e40e"
+            url: "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.4/SpatialRealSDK_202610141821.zip",
+            checksum: "fdaa4a222cdf86a6e38a2a0cfb0887d4b6b6033b19d8704651e0912d9e6ff74c"
         ),
         .target(
             name: "SpatialRealLiveKit",
