@@ -41,6 +41,29 @@ try await session.start()      // joins the room; the avatar's audio and animati
 
 The LiveKit route is SwiftPM only (not in the CocoaPods spec).
 
+### Agora route
+
+If your server-side agent (for example the TEN extension) has the avatar published into an Agora channel, add the **SpatialRealAgora** product as well. It is a source target in this package: it depends on `SpatialRealSDK` and on [AgoraIO/AgoraRtcEngine_iOS](https://github.com/AgoraIO/AgoraRtcEngine_iOS) 4.6.x (product `RtcBasic`), so only add it when you need it.
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SpatialRealSDK", package: "ios-sdk-release"),
+    .product(name: "SpatialRealAgora", package: "ios-sdk-release")
+])
+```
+
+```swift
+import SpatialRealAgora
+
+let session = try await sr.createSession(AgoraAvatarSessionOptions(
+    avatarId: avatarId, credential: sessionToken, container: containerView,
+    agora: .join(appId: agoraAppId, channel: channel, token: rtcToken, avatarUid: avatarUid)))
+// or, when your app already has an AgoraRtcEngineKit in the channel: agora: .shared(engine: engine, avatarUid: avatarUid)
+try await session.start()      // the avatar's audio and animation arrive in the SEI of its H.264 video
+```
+
+The avatar's speech is played from the SEI, in sync with the animation; Agora's own copy of it is muted. Join as a broadcaster on a live-broadcasting channel. The Agora route is SwiftPM only (not in the CocoaPods spec).
+
 ### CocoaPods
 
 ```ruby

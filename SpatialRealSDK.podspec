@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name         = "SpatialRealSDK"
-  spec.version      = "1.0.0-beta.6"
+  spec.version      = "1.0.0-beta.7"
   spec.summary      = "SpatialReal iOS SDK - real-time avatar rendering, driving and voice chat"
   spec.description  = <<-DESC
                       SpatialRealSDK is a high-performance avatar rendering SDK that provides real-time rendering,
@@ -14,9 +14,9 @@ Pod::Spec.new do |spec|
   spec.ios.deployment_target = "16.0"
   spec.swift_version = "6.0"
   spec.source       = {
-    :http => "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.6/SpatialRealSDK_202611022334.zip",
+    :http => "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.7/SpatialRealSDK_202611101850.zip",
     :type => "zip",
-    :sha256 => "2b032c6339307c68e767a4507a4c0a3b503e5a18fb8c8c43ab59fa83f42eee19"
+    :sha256 => "7ad1128310797e1b8013c42c3f1f4f9a4c0ce21553457d7d79a5fb565a51969e"
   }
   spec.vendored_frameworks = "SpatialRealSDK.xcframework"
   spec.frameworks = [
