@@ -8,6 +8,9 @@
 //                       Add it only if your agent runs in a LiveKit room: it pulls LiveKit into your app.
 //   SpatialRealAgora    the Agora route (source; depends on SpatialRealSDK and AgoraIO/AgoraRtcEngine_iOS, product RtcBasic).
 //                       Add it only if the avatar is published into an Agora channel: it pulls Agora into your app.
+//   SpatialRealPipecat  the Pipecat route (source; depends on SpatialRealSDK, pipecat-ai/pipecat-client-ios-daily and
+//                       apple/swift-protobuf). Add it only if your Pipecat bot runs the pipecat-spatialreal processor
+//                       over Daily: it pulls Pipecat and Daily into your app.
 import PackageDescription
 
 let package = Package(
@@ -27,19 +30,27 @@ let package = Package(
         .library(
             name: "SpatialRealAgora",
             targets: ["SpatialRealAgora"]
+        ),
+        .library(
+            name: "SpatialRealPipecat",
+            targets: ["SpatialRealPipecat"]
         )
     ],
     dependencies: [
         // client-sdk-swift 2.16+ manifests need swift-tools 6.1 (Xcode 16.3+); widen once that is the floor
         .package(url: "https://github.com/livekit/client-sdk-swift.git", "2.14.0"..<"2.16.0"),
         // RtcBasic is the smallest Agora product with video and the encoded-frame callback
-        .package(url: "https://github.com/AgoraIO/AgoraRtcEngine_iOS.git", "4.6.4"..<"4.7.0")
+        .package(url: "https://github.com/AgoraIO/AgoraRtcEngine_iOS.git", "4.6.4"..<"4.7.0"),
+        // brings PipecatClientIOS and daily-client-ios
+        .package(url: "https://github.com/pipecat-ai/pipecat-client-ios-daily.git", "1.3.0"..<"2.0.0"),
+        // the Pipecat route decodes the bot's avatar messages with generated protobuf code
+        .package(url: "https://github.com/apple/swift-protobuf.git", "1.30.0"..<"2.0.0")
     ],
     targets: [
         .binaryTarget(
             name: "SpatialRealSDK",
-            url: "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.7/SpatialRealSDK_202611101850.zip",
-            checksum: "7ad1128310797e1b8013c42c3f1f4f9a4c0ce21553457d7d79a5fb565a51969e"
+            url: "https://github.com/SpatialReal-ai/ios-sdk-release/releases/download/v1.0.0-beta.8/SpatialRealSDK_202611111802.zip",
+            checksum: "d8f799e1680d5b094a308522b9e6ae021244931ea9afde9b3552ce64d608ece3"
         ),
         .target(
             name: "SpatialRealLiveKit",
@@ -62,6 +73,15 @@ let package = Package(
                 .product(name: "RtcBasic", package: "AgoraRtcEngine_iOS")
             ],
             path: "Sources/SpatialRealAgora"
+        ),
+        .target(
+            name: "SpatialRealPipecat",
+            dependencies: [
+                "SpatialRealSDK",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+                .product(name: "PipecatClientIOSDaily", package: "pipecat-client-ios-daily")
+            ],
+            path: "Sources/SpatialRealPipecat"
         )
     ]
 )
