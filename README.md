@@ -19,6 +19,17 @@ targets: [
 ]
 ```
 
+### Shared face templates
+
+The shared face templates every avatar is built on (FLAME model, template and teeth, 56 MB) are not in the SDK (since 1.0.0-beta.9). They are downloaded from the CDN once per device, on the first avatar load, checked against their SHA-256 and kept in the app's Application Support directory (excluded from backups); later loads, and later versions of the app, do not download them again. To take that out of the first session, fetch them early, for example at app start:
+
+```swift
+let sr = try SpatialReal(appId: appId)
+try await sr.prefetchSharedTemplates { progress in /* 0...1 */ }   // legacy API: AvatarManager.shared.prefetchSharedTemplates
+```
+
+An app that has to work without the network adds the four files to its own app target as `flame_model.pb`, `flame_template.pb`, `teeth.pb` and `fine_teeth.npz` (they are `model.pb`, `fm/template.pb`, `fm/teeth.pb` and `teeth.npz` under `https://cdn.spatialreal.cloud/sdk/`); the SDK then uses those and never downloads them.
+
 ### LiveKit route
 
 If your agent runs in a LiveKit room (for example with [livekit-plugins-spatialreal](https://github.com/SpatialReal-ai/livekit-plugins-spatialreal)), add the **SpatialRealLiveKit** product as well. It is a source target in this package: it depends on `SpatialRealSDK` and on [livekit/client-sdk-swift](https://github.com/livekit/client-sdk-swift), so only add it when you need it.

@@ -46,21 +46,45 @@ import os
             .sink { [weak self] participants in self?.participantsChanged(participants) }
             .store(in: &cancellables)
         participantsChanged(call.participants)
+        startBotAudioLevels()
+    }
+
+    /// Makes sure Daily reports remote audio levels (every 100 ms), which the quiet point needs.
+    /// Pipecat starts Daily's observer only while it initialises devices, and `disconnect()` stops it;
+    /// a `PipecatClient` reused for another call does not initialise devices again, so the levels
+    /// would never come back. Starting it again is harmless.
+    func startBotAudioLevels() {
+        guard let call else { return }
+        Task { @MainActor [logger] in
+            do {
+                try await call.startRemoteParticipantsAudioLevelObserver(intervalMs: 100)
+            } catch {
+                logger.error("could not start Daily's remote audio levels: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     func detach() {
         cancellables.removeAll()
     }
 
-    func sendAudioRequest() {
+    func sendAudioRequest() -> Bool {
+        // Daily drops app messages sent outside a call without telling `DailyTransport.sendMessage`,
+        // so a request sent then would wait for an answer that never comes.
+        guard call?.callState == .joined else {
+            logger.info("not in a call: the audio request waits for the next bot-ready")
+            return false
+        }
         do {
             // The generated AvatarClientMessage, as Pipecat's Value
             let data = try JSONDecoder().decode(Value.self, from: AvatarWire.audioRequestJSON())
             let message = RTVIMessageOutbound.clientMessage(msgType: AvatarWire.tag, data: data)
             try transport.sendMessage(message: message)
             logger.info("audio mode requested")
+            return true
         } catch {
             logger.error("could not send the audio request: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 

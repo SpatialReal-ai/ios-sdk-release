@@ -111,12 +111,15 @@ public extension SpatialReal {
     }
 
     /// Starts the avatar player. Call it before or after `PipecatClient.connect()`; no network.
+    /// After `end()` it can be called again for the next call, on the same or a new `PipecatClient`
+    /// (with the same transport); audio mode is then requested at that call's bot-ready.
     public func start() async throws {
         try await host.start()
         link.attach()
     }
 
-    /// Stops the avatar and gives the bot's voice back to the call's audio track.
+    /// Stops the avatar and gives the bot's voice back to the call's audio track. `start()` can be
+    /// called again afterwards.
     public func end() async throws {
         try await host.end()
         link.detach()
@@ -130,9 +133,12 @@ public extension SpatialReal {
         stateUnsubscribe = nil
     }
 
-    /// Call from `PipecatClientDelegate.onBotReady(botReadyData:)`: the session then asks the bot's
-    /// processor for the voice-with-animation stream.
+    /// Call from `PipecatClientDelegate.onBotReady(botReadyData:)`, for every call. The session then
+    /// makes sure Daily reports the bot's audio level (Pipecat stops that on `disconnect()` and does not
+    /// start it again when the same `PipecatClient` connects again) and asks the bot's processor for the
+    /// voice-with-animation stream.
     public func handleBotReady() {
+        link.startBotAudioLevels()
         router.botReady()
     }
 
