@@ -1,15 +1,17 @@
 import Foundation
 
-/// 动画包解码(LiveKit 数据通道,topic `spatialreal-animation`)。
+/// Animation packet decoder (LiveKit data channel, topic `spatialreal-animation`).
 ///
-/// 线格式(backend-ng `docs/livekit-animation-data-channel.md`):
+/// Wire format (all integers are little-endian uint32 unless noted):
 ///
-///     [1B flags][4B len LE][len 字节 gzip]
-///     gzip 解开后:[4B frameSeq LE][driveningress.v2.Message]
-///     带 Redundant 时:[4B frameSeq][4B curLen][cur][4B p1Len][p1][4B p2Len][p2]
+///     [1B flags][4B len][len bytes of payload, gzip-compressed when the Gzipped flag is set]
+///     payload:               [4B frameSeq][animation `Message` bytes (protobuf)]
+///     payload with Redundant: [4B frameSeq][4B curLen][cur][4B p1Len][p1][4B p2Len][p2]
 ///
-/// 空闲包只有 5 字节头;转场包的载荷不解析(只用 flags)。
-/// 和 Web `facade/rtc/packet.ts` 一样:frameSeq 去重、补小缺口、大缺口当作新流(resync)。
+/// With Redundant, `cur` is frame `frameSeq` and `p1` / `p2` repeat frames `frameSeq - 1` / `frameSeq - 2`
+/// so a lost packet can be recovered; a zero length means the slot is empty.
+/// Idle packets are just the 5-byte header; transition payloads are not parsed (only the flags are used).
+/// The decoder drops duplicates by frameSeq, fills small gaps, and treats a large gap as a new stream (resync).
 enum PacketFlag {
     static let idle = 0x01
     static let start = 0x02
@@ -22,22 +24,22 @@ enum PacketFlag {
 
 struct DecodedPacket {
     let flags: Int
-    /// 本包交出的 `Message` 字节;空闲/转场/重复包为空。
+    /// `Message` bytes produced by this packet, in frame order; empty for idle, transition and duplicate packets.
     let messages: [Data]
-    /// 发现不可补的缺口或 frameSeq 重新起算:上游应把当前回合复位。
+    /// Set when a gap is too large to fill: the caller should reset the current turn.
     let resync: Bool
 }
 
 final class AnimationPacketDecoder {
     private static let header = 5
     private static let noSeq: Int64 = -1
-    /// 最多用上一帧原地补几帧(25 fps 下 400 ms);再多就算断流。
+    /// Maximum number of missing frames filled by repeating the last frame (400 ms at 25 fps); a larger gap counts as a broken stream.
     private static let maxGapFill: Int64 = 10
 
     private var lastSeq = noSeq
     private var lastFrame: Data?
 
-    /// 新流 / 断线后调用:忘掉位置,下一包无条件接受。
+    /// Call for a new stream or after a disconnect: forgets the position so the next packet is accepted unconditionally.
     func reset() {
         lastSeq = Self.noSeq
         lastFrame = nil
@@ -87,12 +89,12 @@ final class AnimationPacketDecoder {
         }
 
         var resync = false
-        // Start 通常是新流,frameSeq 从 0 重新起算
+        // Start usually begins a new stream, and frameSeq restarts from 0
         if flags & PacketFlag.start != 0, lastSeq != Self.noSeq, seq < lastSeq {
             lastSeq = Self.noSeq
             lastFrame = nil
         }
-        if lastSeq != Self.noSeq, seq <= lastSeq { return DecodedPacket(flags: flags, messages: [], resync: false) } // 重复或迟到
+        if lastSeq != Self.noSeq, seq <= lastSeq { return DecodedPacket(flags: flags, messages: [], resync: false) } // duplicate or late
 
         var out: [Data] = []
         if lastSeq != Self.noSeq {

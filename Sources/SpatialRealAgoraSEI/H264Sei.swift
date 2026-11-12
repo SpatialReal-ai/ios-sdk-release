@@ -1,25 +1,27 @@
 import Foundation
 
-/// H.264 Annex B 里的 SEI 读取(照 Web `facade/rtc/h264-sei.ts`)。
+/// Reads SEI from H.264 Annex B frames.
 ///
-/// Agora 的编码帧回调交出整帧 Annex B(起始码 + NAL)。形象的数据在 SEI NAL(type 6)里,
-/// SEI 消息的 payload type 是 101(Agora 自己的 metadata 载体,不是 UUID 型的 5)。
-/// NAL 体是 EBSP:先去掉防竞争字节(`00 00 03` 里的 03)才是 RBSP,再按 SEI 语法逐条读。
+/// Agora's encoded frame callback delivers whole Annex B frames (start codes + NAL units). The avatar data is in SEI
+/// NAL units (type 6) whose SEI messages use payload type 101 (Agora's own metadata carrier, not the UUID-based 5).
+/// The NAL body is EBSP: emulation prevention bytes (the 03 in `00 00 03`) are removed to get RBSP, which is then read
+/// message by message using SEI syntax.
 package enum H264Sei {
     package static let agoraPayloadType = 101
     static let maxFrameBytes = 2 << 20
     static let maxNals = 64
     static let maxMessages = 16
-    /// 突发模式下一条 SEI 实测到约 7.9 KB;留余量。
+    /// In burst mode a single SEI has been measured at about 7.9 KB; this leaves headroom.
     static let maxPayloadBytes = 16 << 10
 
     package struct Result {
         package var payloads: [Data] = []
-        /// 起始码、NAL 头、SEI 语法或外层封套不对的个数(诊断用)。
+        /// Number of bad start codes, NAL headers, SEI syntax or outer envelopes (for diagnostics).
         package var malformed = 0
     }
 
-    /// 一帧里所有 type 101 的 SEI 载荷,每个都已过了外层封套检查(`[1B flags][4B LE len]`,长度对得上)。
+    /// All type-101 SEI payloads in a frame, each already past the outer envelope check (`[1B flags][4B LE len]`
+    /// with a matching length).
     package static func agoraPayloads(_ frame: Data) -> Result {
         var result = Result()
         guard frame.count <= maxFrameBytes else { result.malformed += 1; return result }
@@ -64,7 +66,7 @@ package enum H264Sei {
             return nil
         }
         while at < data.count {
-            // rbsp_trailing_bits:0x80 后全 0
+            // rbsp_trailing_bits: 0x80 followed by all zeros
             if data[at] == 0x80, data[(at + 1)...].allSatisfy({ $0 == 0 }) { break }
             messages += 1
             if messages > maxMessages { break }
@@ -81,7 +83,8 @@ package enum H264Sei {
         result.payloads.append(contentsOf: found)
     }
 
-    /// 外层封套:`[1B flags][4B LE len][len 字节]`,flags 最高位为 0,长度正好是剩下的字节数。
+    /// Outer envelope: `[1B flags][4B LE len][len bytes]`, the top bit of flags is 0, and len equals the remaining
+    /// byte count exactly.
     package static func hasEnvelope(_ p: Data) -> Bool {
         guard p.count >= 5 else { return false }
         let s = p.startIndex
@@ -90,7 +93,7 @@ package enum H264Sei {
         return Int(len) == p.count - 5
     }
 
-    /// 下一个起始码(`00 00 01` 或 `00 00 00 01`):at = 起始码开头,body = NAL 第一个字节。
+    /// Next start code (`00 00 01` or `00 00 00 01`): `at` = start of the start code, `body` = first byte of the NAL.
     static func startCode(_ b: [UInt8], from: Int) -> (at: Int, body: Int)? {
         var i = from
         while i + 2 < b.count {
@@ -102,7 +105,8 @@ package enum H264Sei {
         return nil
     }
 
-    /// EBSP → RBSP:两个 0 后的 03 是防竞争字节,去掉;03 后面只能跟 00..03。
+    /// EBSP → RBSP: a 03 after two zero bytes is an emulation prevention byte and is removed; it may only be followed
+    /// by 00..03.
     static func rbsp(_ b: [UInt8], from: Int, to: Int) -> [UInt8]? {
         var out = [UInt8]()
         out.reserveCapacity(max(0, to - from))

@@ -1,9 +1,11 @@
 import AVFoundation
 import Foundation
 
-/// 把 LiveKit 远端音频渲染回调给的 `AVAudioPCMBuffer`(Float32 或 Int16,任意声道数、任意采样率)
-/// 转成宿主模式播放器要的 PCM16 单声道、小端、固定采样率;按 `chunkMs` 攒成块再交出。
-/// 回调来自音频线程,内部用锁串行。
+/// Converts the `AVAudioPCMBuffer`s from LiveKit's remote audio render callback (Float32 or Int16, any channel
+/// count, any sample rate) into the PCM16 mono little-endian audio at a fixed sample rate that the host-mode
+/// player expects, and emits it in chunks of `chunkMs`.
+/// The render callback runs on the audio thread; an internal lock serializes the work, and `onChunk` is called
+/// on the pushing thread while that lock is held.
 final class PcmConverter: @unchecked Sendable {
     private let targetRate: Int
     private let chunkBytes: Int
@@ -75,7 +77,7 @@ final class PcmConverter: @unchecked Sendable {
         }
     }
 
-    /// 轨道没了 / 回合结束时把不满一块的尾巴交出去。
+    /// Emits the remaining partial chunk; call when the track goes away or a turn ends.
     func flush() {
         lock.lock(); defer { lock.unlock() }
         guard !pending.isEmpty else { return }
@@ -93,7 +95,8 @@ final class PcmConverter: @unchecked Sendable {
         let step = Double(rate) / Double(targetRate)
         var out: [Int16] = []
         out.reserveCapacity(input.count * targetRate / rate + 2)
-        // 位置以 input 索引计;-1 代表上一块最后一个样本。按序号乘步长,不累加,避免浮点漂移多出一个样本
+        // Positions are input indices; -1 is the last sample of the previous chunk. Each position is computed as
+        // index * step rather than a running sum, so floating-point drift can't add an extra sample.
         let start = phase - 1.0
         var k = 0
         while true {

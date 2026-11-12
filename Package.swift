@@ -1,6 +1,5 @@
 // swift-tools-version:5.9
 // SpatialReal iOS SDK — binary distribution (SpatialRealSDK.xcframework).
-// Source repository: https://github.com/SpatialReal-ai/ios-sdk
 //
 // Products:
 //   SpatialRealSDK      the SDK (prebuilt xcframework)
