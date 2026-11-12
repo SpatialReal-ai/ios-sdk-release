@@ -5,7 +5,8 @@ import SpatialRealSDK
 import UIKit
 import os
 
-/// 进哪个房间。`avatarIdentity` 不给时,认 identity 为 `spatialreal-avatar` 或带 `lk.publish_on_behalf` 属性的参与者。
+/// The LiveKit room to join. If `avatarIdentity` is nil, the avatar is the participant whose identity is
+/// `spatialreal-avatar` or who carries the `lk.publish_on_behalf` attribute.
 public struct LiveKitConnection: Sendable {
     public let url: String
     public let token: String
@@ -18,10 +19,11 @@ public struct LiveKitConnection: Sendable {
     }
 }
 
-/// LiveKit 路由:你的 agent 在 LiveKit 房间里,形象由 egress 发布进同一个房间,
-/// 本端只订阅它的音频轨和动画数据通道,交给宿主模式播放。
+/// LiveKit route: your agent runs in a LiveKit room and SpatialReal publishes the avatar into the same room.
+/// This session subscribes only to the avatar's audio track and animation data channel and plays them in host mode.
 ///
-/// - `mic`:`.required`(默认)start() 时开麦,失败抛 `mic-denied`;`.optional` 失败只记日志;`.manual` 不碰麦,自己用 `LiveKitAvatarSession.room`。
+/// - `mic`: `.required` (default) publishes the microphone in `start()` and throws `mic-denied` if that fails;
+///   `.optional` only logs the failure; `.manual` leaves the microphone alone, so manage it yourself through `LiveKitAvatarSession.room`.
 public struct LiveKitAvatarSessionOptions {
     public let avatarId: String
     public let credential: String
@@ -39,7 +41,7 @@ public struct LiveKitAvatarSessionOptions {
 }
 
 public extension SpatialReal {
-    /// 创建 LiveKit 路由会话。形象资源在这里下载(和 HostAvatarSession 一样),房间在 `start()` 时才连。
+    /// Creates a LiveKit route session. Avatar assets are downloaded here (as with `HostAvatarSession`); the room is not joined until `start()`.
     func createSession(_ options: LiveKitAvatarSessionOptions) async throws -> LiveKitAvatarSession {
         guard !options.livekit.url.isEmpty else { throw SpatialRealError(.invalidParams, "`livekit.url` is required.") }
         guard !options.livekit.token.isEmpty else { throw SpatialRealError(.invalidParams, "`livekit.token` is required.") }
@@ -50,17 +52,17 @@ public extension SpatialReal {
 }
 
 @MainActor public final class LiveKitAvatarSession {
-    /// 宿主模式播放器的采样率;WebRTC 解码出的 Opus 就是 48 kHz,不用重采样。
+    /// Sample rate of the host-mode player. WebRTC decodes Opus at 48 kHz, so the room audio normally needs no resampling.
     public static let sampleRate = 48000
     public static let defaultAvatarIdentity = "spatialreal-avatar"
     static let animationTopic = "spatialreal-animation"
     static let animationTrack = "egress-animation"
     static let audioTrack = "egress-audio"
     static let publishOnBehalf = "lk.publish_on_behalf"
-    /// 门开着却 3 s 没有任何动画包:当作这一轮丢了,关门。
+    /// If a turn is open but no animation packet arrives for 3 s, the turn is treated as lost and closed.
     static let stallSeconds: TimeInterval = 3
 
-    /// 底下的 LiveKit `Room`:给你自己的数据、麦克风和 UI 用,别用它播形象的音频(SDK 已接管)。
+    /// The underlying LiveKit `Room`, for your own data, microphone and UI. Don't use it to play the avatar's audio; the SDK already does that.
     public let room: Room
 
     private let host: HostAvatarSession
@@ -78,12 +80,12 @@ public extension SpatialReal {
     private var lastPacketAt: TimeInterval = 0
     private var errorListeners: [UUID: (SpatialRealError) -> Void] = [:]
 
-    // 诊断计数(真机排障用,demo 定时打印)
+    // Diagnostic counters for on-device troubleshooting (the demo prints them periodically)
     var dbgPackets = 0, dbgContentPackets = 0, dbgIdlePackets = 0, dbgAudioChunks = 0
     var dbgAudioYielded = 0, dbgFramesYielded = 0, dbgTurns = 0
     var dbgLastError: String?
 
-    /// 一行状态:房间、绑定的形象、各通道的计数。给 demo / 日志用,格式不保证稳定。
+    /// One-line status: room, bound avatar and per-channel counters. Intended for demos and logs; the format is not stable.
     public func debugSnapshot() -> String {
         let parts = room.remoteParticipants.keys.map(\.stringValue)
         var s = "room=\(room.connectionState) participants=\(parts) bound=\(boundIdentity ?? "-") audioTrack=\(audioTrack != nil) "
@@ -123,7 +125,7 @@ public extension SpatialReal {
         for l in errorListeners.values { l(e) }
     }
 
-    /// 先起宿主播放器,再连房间、按 `mic` 开麦。任一步失败都退回 idle 并抛错。
+    /// Starts the host-mode player, then joins the room and applies the `mic` policy. If any step fails, the session returns to idle and the error is thrown.
     public func start() async throws {
         try await host.start()
         do {
@@ -141,31 +143,31 @@ public extension SpatialReal {
         }
     }
 
-    /// 离开房间,结束播放。
+    /// Leaves the room and stops playback.
     public func end() async throws {
         await teardownRoom()
         try await host.end()
     }
 
-    /// 离开房间、释放视图。之后这个对象不能再用。
+    /// Leaves the room and releases the view. The session can't be used afterwards.
     public func dispose() async {
         await teardownRoom()
         await host.dispose()
         bridge.finish()
     }
 
-    /// 打断:丢掉未播的音频和帧,回到待机;被切断那句的尾巴不会再把回合打开。
+    /// Interrupts playback: drops audio and frames not yet played and returns to idle. The tail of the interrupted utterance won't reopen the turn.
     public func interrupt() throws {
         try host.interrupt()
         gate.interrupt()
     }
 
-    /// 开/关发到房间里的麦克风(需要麦克风权限)。
+    /// Turns the microphone published to the room on or off (requires microphone permission).
     public func setMicrophone(enabled: Bool) async throws {
         try await room.localParticipant.setMicrophone(enabled: enabled)
     }
 
-    // MARK: - 房间事件(统一在主线程按到达顺序处理)
+    // MARK: - Room events (handled on the main thread in arrival order)
 
     private func startLoops() {
         loopTask?.cancel()
@@ -219,12 +221,12 @@ public extension SpatialReal {
             if let t = publication.track as? RemoteAudioTrack, publication.name == Self.audioTrack || publication.kind == .audio {
                 guard audioTrack == nil else { return }
                 boundIdentity = identity(participant)
-                t.volume = 0 // 这条轨的播放由宿主模式播放器负责,WebRTC 自己的播放静掉
+                t.volume = 0 // the host-mode player plays this track, so mute WebRTC's own playback
                 t.add(audioRenderer: bridge)
                 audioTrack = t
                 logger.info("bound avatar '\(self.boundIdentity ?? "", privacy: .public)' audio track '\(publication.name, privacy: .public)'")
             } else if publication.kind == .video, publication.name == Self.animationTrack {
-                Task { try? await publication.set(subscribed: false) } // 动画走数据通道;伪 VP8 视频轨退订,省带宽
+                Task { try? await publication.set(subscribed: false) } // animation arrives over the data channel; unsubscribe the placeholder VP8 video track to save bandwidth
             }
         case let .published(participant, publication):
             if isAvatar(participant), publication.name == Self.animationTrack {
@@ -287,8 +289,9 @@ public extension SpatialReal {
         await room.disconnect()
     }
 
-    /// 门限下面的宿主管线。iOS 的宿主会话不接受"空块开回合",所以回合在第一块音频到达时才在
-    /// 播放器里开;之前到的帧先攒着,音频一到就跟在后面喂进去。
+    /// Host-mode pipeline behind the turn gate. The host session doesn't accept an empty chunk to open a turn, so the
+    /// turn opens in the player only when the first audio chunk arrives. Frames that arrive earlier are buffered (the
+    /// most recent 200 are kept) and fed in right after that first audio chunk.
     @MainActor private final class HostSink: TurnSink {
         private unowned let session: LiveKitAvatarSession
         private var audioStarted = false
@@ -346,7 +349,8 @@ public extension SpatialReal {
     }
 }
 
-/// 从 LiveKit 的回调线程把事件送到主线程的流;同时是远端音频轨的渲染器(抽 PCM)。
+/// Room events carried from LiveKit's callback threads to the session's main-thread stream. `RoomBridge` produces
+/// them and also acts as the remote audio track's renderer, extracting PCM.
 enum RoomEvent: @unchecked Sendable {
     case audio(Data)
     case data(RemoteParticipant?, String, Data)

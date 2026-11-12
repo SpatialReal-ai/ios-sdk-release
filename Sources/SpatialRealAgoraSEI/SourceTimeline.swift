@@ -1,51 +1,58 @@
 import Foundation
 @_spi(RTC) import SpatialRealSDK
 
-/// 一条流的 Opus 解码器;单测注入假的。
+/// Opus decoder for one stream; unit tests inject a fake.
 package protocol SourceOpusDecoding: AnyObject {
-    /// 一个 Opus 包解出的全部样本(PCM16 单声道 48 kHz),不裁 pre-skip。
+    /// All samples decoded from one Opus packet (PCM16 mono, 48 kHz), without trimming pre-skip.
     func decode(_ packet: Data) throws -> Data
     func release()
 }
 
 extension RtcOpusDecoder: SourceOpusDecoding {}
 
-/// 源时间线往下游(宿主播放器)交的东西。调用顺序:一轮里先有 `turnAudio`(开轮),之后音频和帧交替,最后 `turnEnd`。
+/// What the source timeline delivers downstream (to the host player). Call order within a turn: `turnAudio` first
+/// (opens the turn), then audio and frames interleaved, then `turnEnd`.
 @MainActor package protocol SourceTimelineSink: AnyObject {
-    /// 这一轮接下来的一段连续 PCM16(48 kHz 单声道),从源样本 0 起不留空洞。
+    /// The next contiguous run of PCM16 (48 kHz mono) for this turn, gap-free from source sample 0.
     func turnAudio(_ pcm: Data)
-    /// 这一轮接下来的姿态,每条一个 `Message`,从第 0 帧起连续(每帧 1920 个源样本)。
+    /// The next poses for this turn, one `Message` each, contiguous from frame 0 (1920 source samples per frame).
     func turnFrames(_ messages: [Data])
-    /// 这一轮的有效音频和姿态都交完了。
+    /// All valid audio and poses for this turn have been delivered.
     func turnEnd()
-    /// 服务端打断了正在播的这一轮:丢掉已排队的。
+    /// The server interrupted the turn that is playing: drop whatever is queued.
     func interruptPlayback()
 }
 
-/// Agora SEI 里的"源时间线"(照 Web `facade/rtc/source-audio-router.ts`,简化到 iOS 播放器需要的部分)。
+/// The source timeline carried in Agora SEI, reduced to what the host player needs.
 ///
-/// 每条 SEI 都带 `RtcAudioBundle`:流的身份(publication + stream sequence = 一轮)、Opus 包(带解码器样本坐标和有效区间)、
-/// 结束标记;同一个 `ServerResponseAnimation` 里的姿态用 `animation_source_sample` 落在同一条样本时钟上。
-/// 包和姿态会在很多条 SEI 里重复(冗余 / 突发模式的重发),这里按包序号和样本位置去重、排序,
-/// 再从源样本 0 起把连续的 PCM 和姿态交给宿主播放器。播放器以"已播样本数"为时钟取帧,所以到达快于实时(突发)也对得上。
+/// Every SEI carries an `RtcAudioBundle`: the stream identity (publication + stream sequence = one turn), Opus packets
+/// (with decoder sample coordinates and a valid range), and an end marker. Poses in the same `ServerResponseAnimation`
+/// sit on the same sample clock via `animation_source_sample`. Packets and poses repeat across many SEI messages
+/// (redundancy and burst-mode retransmission), so this type deduplicates and orders them by packet sequence and sample
+/// position, then hands contiguous PCM and poses to the host player starting at source sample 0. The player picks
+/// frames by samples played, so data arriving faster than real time (burst) stays in sync.
 ///
-/// - 突发(`BOUNDED_BURST_V1`):有音频和第一帧就起播,后面的一次性排进播放器。
-/// - 实时节奏(无 profile):先攒 `realtimeStartSamples`(0.4 s)连续音频再起播,吸收网络抖动(同 Web)。
-/// - 结束:`RtcAudioEnd(complete)` 且有效样本、姿态都交完 → `turnEnd`。
-/// - 打断:`RtcAudioEnd(interrupted)` → `interruptPlayback`;这一条流作废,之后重复来的包不会再把它开起来。
-/// - 丢包:后面的包到了而缺的包 `gapWait` 内没补上,用静音占位(保住样本坐标,嘴型不错位)。
+/// - Burst (`BOUNDED_BURST_V1`): playback starts once there is audio and the first frame; the rest is queued in the
+///   player at once.
+/// - Real-time pacing (no profile): buffers `realtimeStartSamples` (0.4 s) of contiguous audio before starting, to
+///   absorb network jitter.
+/// - End: `RtcAudioEnd(complete)` and all valid samples and poses delivered → `turnEnd`.
+/// - Interrupt: `RtcAudioEnd(interrupted)` → `interruptPlayback`; the stream is retired and later duplicate packets do
+///   not reopen it.
+/// - Packet loss: if later packets have arrived and a missing one is not filled within `gapWait`, it is replaced with
+///   silence (keeps sample coordinates so lip sync does not drift).
 @MainActor package final class SourceTimeline {
     package struct Options {
         var frameSamples = 1920
         var realtimeStartSamples = 19200
-        /// 有空洞(后面的包已到)时等补包多久,之后静音占位。
+        /// How long to wait for a missing packet (when later packets have arrived) before filling with silence.
         var gapWait: TimeInterval = 0.25
-        /// 结束标记已到、尾巴还缺:等多久就按已有的收尾。
+        /// End marker received but the tail is incomplete: how long to wait before finishing with what is there.
         var tailWait: TimeInterval = 3
-        /// 没有结束标记、也没有新数据:等多久就按已有的收尾。
+        /// No end marker and no new data: how long to wait before finishing with what is there.
         var idleWait: TimeInterval = 10
         var maxPendingStreams = 4
-        /// 一轮最多攒多少还没交出去的样本(60 s,和播放器的背压上限一致)。
+        /// Maximum undelivered samples buffered per turn (60 s, matching the player's backpressure limit).
         var maxPendingSamples = 48000 * 60
 
         package init() {}
@@ -57,9 +64,10 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         package var packets = 0, concealedPackets = 0, frames = 0
         package var samplesOut = 0, framesOut = 0
         package var decodeErrors = 0
-        /// 解码器给出的样本数和包描述的 decodedSamples 不一致的包(坐标以包描述为准,裁/补齐)。
+        /// Packets where the decoder's sample count differs from the packet's `decodedSamples` (the packet's value
+        /// wins; output is trimmed or zero-padded).
         package var decodeSizeMismatches = 0
-        /// 最近一次不一致:流序号 / 包序号 / 解出的样本数 / 包描述的样本数。
+        /// Most recent mismatch: stream sequence / packet sequence / samples decoded / samples declared.
         package var lastDecodeSizeMismatch: String?
     }
 
@@ -71,9 +79,9 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         var packets: [UInt64: RtcSourceMessage.Packet] = [:]
         var nextPacket: UInt64 = 0
         var decoder: SourceOpusDecoding?
-        /// 已解码的有效音频的末尾(源样本坐标)。
+        /// End of the decoded valid audio (source sample coordinate).
         var decodedThrough = 0
-        /// 已解码、还没交出去的 PCM;开头是源样本 `admitted`。
+        /// Decoded PCM not yet delivered; it starts at source sample `admitted`.
         var pcm = Data()
         var admitted = 0
         var frames: [Int: Data] = [:]
@@ -101,11 +109,11 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
     private var publication: String?
     private var active: Stream?
     private var pending: [UInt64: Stream] = [:]
-    /// 这个序号及以前的流已结束或作废:它们的重发不再理会。
+    /// Streams up to and including this sequence have ended or been retired; their retransmissions are ignored.
     private var retiredThrough: Int64 = -1
-    /// 见过的最大序号:服务端的打断只可能针对它。
+    /// Highest sequence seen; a server interrupt can only target this one.
     private var observedThrough: Int64 = -1
-    /// 已经交给播放器收尾、可能还在播的那一轮(只记最新的一个)。
+    /// The turn already handed to the player to finish, which may still be playing (only the latest is kept).
     private var playingSequence: UInt64?
     private var handledInterrupt: UInt64?
 
@@ -119,10 +127,10 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
     package var isTurnOpen: Bool { active?.started == true }
     package var activeSequence: UInt64? { active?.sequence }
 
-    // MARK: - 输入
+    // MARK: - Input
 
-    /// 一条 SEI 里的一条 Message。`content` = 载体是内容包(不是 Idle / 转场):只有内容包能开一条新流,
-    /// 控制包只修补已经见过的流(补包、补结束标记)。
+    /// One Message from an SEI. `content` means the carrier is a content packet (not Idle / Transition): only content
+    /// packets can open a new stream; control packets only patch streams already seen (missing packets, end markers).
     package func accept(_ message: RtcSourceMessage, content: Bool) {
         stats.carriers += 1
         guard let a = message.audio else { stats.withoutAudio += 1; return }
@@ -130,7 +138,7 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         let t = now()
 
         if let current = publication, current != a.publicationID {
-            // 形象重新发布了:旧的那条全部作废
+            // The avatar republished: retire everything from the old publication.
             guard content else { return }
             dropAll(interruptPlaying: active?.started == true)
             reset()
@@ -188,7 +196,7 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         if stream === active { pump() }
     }
 
-    /// 定时调用(约 10 Hz):空洞静音占位、超时收尾。
+    /// Call periodically (about 10 Hz): fills gaps with silence and finishes stalled turns.
     package func tick() {
         guard let s = active else { return }
         pump()
@@ -201,14 +209,15 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         }
     }
 
-    /// 接入方的打断:把见过的流全部作废(它们的重发不再开轮)。播放器由会话自己打断。
+    /// Client-side interrupt: retires every stream seen so far (their retransmissions do not open a turn). The session
+    /// interrupts the player itself.
     package func interrupt() {
         retiredThrough = max(retiredThrough, observedThrough)
         dropAll(interruptPlaying: false)
         playingSequence = nil
     }
 
-    /// 形象离开 / 会话结束:全部忘掉,下一条内容包重新开始。
+    /// Avatar left or session ended: forget everything; the next content packet starts over.
     package func reset() {
         dropAll(interruptPlaying: false)
         publication = nil
@@ -218,7 +227,7 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         handledInterrupt = nil
     }
 
-    // MARK: - 内部
+    // MARK: - Internals
 
     private func serverInterrupted(_ sequence: UInt64) {
         if handledInterrupt == sequence { return }
@@ -236,13 +245,14 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
             s.decoder?.release()
             retiredThrough = max(retiredThrough, Int64(sequence))
         } else if playingSequence == sequence, Int64(sequence) == observedThrough {
-            // 已经全交给播放器、可能还在播;只有它还是最新的一轮时才算数(否则是过时的重发)
+            // Fully handed to the player and possibly still playing; counts only while it is still the latest turn
+            // (otherwise it is a stale retransmission).
             handledInterrupt = sequence
             stats.serverInterrupts += 1
             playingSequence = nil
             sink.interruptPlayback()
         } else if Int64(sequence) > retiredThrough {
-            // 还没见过内容就被打断了:记成作废,之后的重发不开轮
+            // Interrupted before any content was seen: mark it retired so later retransmissions do not open a turn.
             handledInterrupt = sequence
             retiredThrough = Int64(sequence)
             observedThrough = max(observedThrough, Int64(sequence))
@@ -289,7 +299,7 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
             if let decoder = s.decoder {
                 do { raw = try decoder.decode(p.data) } catch { stats.decodeErrors += 1 }
             }
-            // 坐标以包描述为准:解码器多给少给都裁/补到 decodedSamples
+            // The packet's coordinates win: trim or zero-pad decoder output to `decodedSamples`.
             let want = p.decodedSamples * 2
             if raw.count != want, s.decoder != nil {
                 stats.decodeSizeMismatches += 1
@@ -317,7 +327,8 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         s.decodedThrough = s.admitted + s.pcm.count / 2
     }
 
-    /// 缺 nextPacket 而后面的包已到:等 `gapWait` 补包,之后用静音把坐标补到下一个包,解码继续。
+    /// `nextPacket` is missing but later packets have arrived: wait `gapWait` for it, then fill with silence up to the
+    /// next available packet and continue decoding.
     private func concealGapIfDue(_ s: Stream) {
         guard s.packets[s.nextPacket] == nil, let later = s.packets.keys.min() else { s.gapSince = nil; return }
         let t = now()
@@ -353,7 +364,8 @@ extension RtcOpusDecoder: SourceOpusDecoding {}
         }
     }
 
-    /// 收尾:正常结束(全交完)或超时(按已有的)。没起播过又什么都没有的流直接作废。
+    /// Finishes a turn: naturally (everything delivered) or on timeout (with what is there). A stream that never
+    /// started and has nothing buffered is simply retired.
     private func finish(_ s: Stream, natural: Bool) {
         if !natural, !s.started, s.pcm.isEmpty {
             retire(s)

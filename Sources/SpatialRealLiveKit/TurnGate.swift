@@ -1,10 +1,11 @@
 import Foundation
 
-/// 回合门限,照搬 Web `facade/rtc/turn-gate.ts`。
+/// Turn gate: derives speaking turns from the animation packet flags.
 ///
-/// egress 的包流没有"回合"概念,只有 flags:Start 开回合(Start 丢了就由第一个内容帧开),
-/// End 关;正常一轮结束时 egress 不发 End,而是内容停、发 ~0.8 s TransitionEnd、再发空闲心跳,
-/// 所以第一个 TransitionEnd 就当作说完了;Idle 兜底。门开着时音频才往下送。
+/// The server's packet stream has no notion of a turn, only flags. Start opens a turn (if Start is lost, the
+/// first content frame opens it) and End closes it. At the normal end of a turn the server doesn't send End:
+/// content stops, ~0.8 s of TransitionEnd packets follow, then idle heartbeats. So the first TransitionEnd is
+/// treated as the end of speech, with Idle as the fallback. Audio is forwarded only while the gate is open.
 @MainActor protocol TurnSink: AnyObject {
     func open()
     func audio(_ pcm: Data, end: Bool)
@@ -12,11 +13,11 @@ import Foundation
     func close()
 }
 
-/// 只在主线程上用(会话的事件循环和宿主播放器都在主 actor)。
+/// Main-actor only (the session's event loop and the host-mode player both run on the main actor).
 @MainActor final class TurnGate {
     private let sink: TurnSink
     private(set) var isOpen = false
-    /// 打断之后:同一句被切断的尾巴(Start 重发、无帧)不能把回合重新打开。
+    /// Set after an interrupt: the tail of the interrupted utterance (a re-sent Start with no frames) must not reopen the turn.
     private(set) var isSuppressed = false
 
     init(sink: TurnSink) { self.sink = sink }
@@ -29,7 +30,7 @@ import Foundation
             isSuppressed = false
             return
         }
-        if !isContent { return } // 转场开始包对我们没有内容(播放器自己做转场)
+        if !isContent { return } // a transition-start packet carries nothing for us (the player runs transitions itself)
         if isSuppressed {
             if flags & PacketFlag.start == 0 || messages.isEmpty { return }
             isSuppressed = false

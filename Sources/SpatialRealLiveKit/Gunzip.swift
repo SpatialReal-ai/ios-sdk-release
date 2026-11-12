@@ -1,7 +1,9 @@
 import Compression
 import Foundation
 
-/// gzip 解压(egress 的动画包用 gzip BestSpeed 压):剥掉 gzip 头尾,中间是裸 DEFLATE,交给 Compression。
+/// gzip decompression for animation packets (the server compresses them with gzip at best-speed level).
+/// Strips the gzip header and trailer and hands the raw DEFLATE body to the Compression framework.
+/// Output is capped at 16 MiB (taken from the gzip ISIZE trailer); returns nil on malformed input or a size mismatch.
 enum Gunzip {
     private static let maxOutput = 16 << 20
 

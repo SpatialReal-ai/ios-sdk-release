@@ -1,7 +1,7 @@
 import Compression
 import Foundation
 
-/// egress 写进 SEI 的包头 flags(backend-ng `internal/egress/providers/agora/animation_track.go`;和 LiveKit 数据通道同一套)。
+/// Header flags the server writes into each SEI payload (the same set as on the LiveKit data channel).
 package enum SeiFlag {
     package static let idle = 0x01
     package static let start = 0x02
@@ -13,22 +13,23 @@ package enum SeiFlag {
     package static let control = idle | transition | transitionEnd
 }
 
-/// 一条 SEI 载荷解出来的东西(照 Web `facade/rtc/sei-packet.ts`):
+/// The decoded contents of one SEI payload:
 ///
-///     [1B flags][4B LE len][len 字节] —— 这 len 字节是 escape(zlib(payload)),5 字节头不转义
-///     内容包解压后:[4B LE frameSeq][Message];带 Redundant:[4B seq][4B len][cur][4B len][p1][4B len][p2]
-///     控制包(Idle / Transition / TransitionEnd)解压后是一条裸 Message,可能为空
+///     [1B flags][4B LE len][len bytes] — the len bytes are escape(zlib(payload)); the 5-byte header is not escaped
+///     Content packet, inflated: [4B LE frameSeq][Message]; with Redundant: [4B seq][4B len][cur][4B len][p1][4B len][p2]
+///     Control packet (Idle / Transition / TransitionEnd), inflated: one bare Message, possibly empty
 ///
-/// 源时间线的音频和姿态都按样本坐标去重,所以这里不做 frameSeq 去重,把载体里的每条 Message 都交出去。
+/// The source timeline deduplicates audio and poses by sample position, so no frameSeq deduplication happens here;
+/// every Message in the carrier is returned.
 package struct SeiPacket: Equatable {
     package let flags: Int
-    /// 载体里的 `driveningress.v2.Message` 字节(冗余布局下当前的在最后)。
+    /// The `driveningress.v2.Message` bytes in the carrier (in the redundant layout, the current one is last).
     package let messages: [Data]
 
     package var isControl: Bool { flags & SeiFlag.control != 0 }
 
     static let headerSize = 5
-    /// 解压上限:一条载荷不可能解出这么多(突发模式实测几十 KB)。
+    /// Inflate limit: no valid payload comes close to this (burst-mode payloads measure tens of KB).
     static let maxInflated = 4 << 20
 
     package enum Failure: Error, Equatable {
@@ -56,7 +57,8 @@ package struct SeiPacket: Equatable {
         return .success(SeiPacket(flags: flags, messages: messages))
     }
 
-    /// egress 的 escapeZeroBytes 反过来:每个 0x00 / 0xFF 后面跟一个 0xFF 填充字节,去掉。填充不对返回 nil。
+    /// Reverses the server's byte escaping: every 0x00 / 0xFF is followed by a 0xFF padding byte, which is removed.
+    /// Returns nil if the padding is wrong.
     static func unescape(_ p: ArraySlice<UInt8>) -> [UInt8]? {
         var out = [UInt8]()
         out.reserveCapacity(p.count)
@@ -73,7 +75,8 @@ package struct SeiPacket: Equatable {
         return out
     }
 
-    /// 解压后的载荷 → Message 列表。冗余布局把旧的放前面,按时间顺序交出。
+    /// Inflated payload → list of Messages. The redundant layout is reordered so older ones come first, i.e. in time
+    /// order.
     static func payload(_ raw: [UInt8], redundant: Bool) -> [Data]? {
         guard raw.count >= 4 else { return nil }
         if !redundant { return raw.count > 4 ? [Data(raw[4...])] : nil }
@@ -89,7 +92,8 @@ package struct SeiPacket: Equatable {
         return parts.isEmpty ? nil : parts.reversed()
     }
 
-    /// zlib 流(RFC 1950:2 字节头 + DEFLATE + Adler-32)。Compression 的 ZLIB 是裸 DEFLATE,头自己剥。
+    /// zlib stream (RFC 1950: 2-byte header + DEFLATE + Adler-32). Apple's Compression `ZLIB` is raw DEFLATE, so
+    /// the header is stripped here.
     static func inflateZlib(_ z: [UInt8]) -> [UInt8]? {
         guard z.count >= 6 else { return nil }
         let cmf = Int(z[0]), flg = Int(z[1])
@@ -112,7 +116,7 @@ package struct SeiPacket: Equatable {
                 let status = buffer.withUnsafeMutableBufferPointer { d -> compression_status in
                     stream.pointee.dst_ptr = d.baseAddress!
                     stream.pointee.dst_size = chunk
-                    // 不带 FINALIZE:流末尾还有 Adler-32 四个字节,DEFLATE 自己知道在哪结束
+                    // No FINALIZE: the 4-byte Adler-32 trails the stream, and DEFLATE knows where it ends.
                     return compression_stream_process(stream, 0)
                 }
                 let produced = chunk - stream.pointee.dst_size
@@ -121,7 +125,7 @@ package struct SeiPacket: Equatable {
                 switch status {
                 case COMPRESSION_STATUS_END: return out
                 case COMPRESSION_STATUS_OK:
-                    // 输入吃完、也没产出:流被截断
+                    // Input consumed and nothing produced: the stream is truncated.
                     if produced == 0, stream.pointee.src_size == 0 { return nil }
                 default: return nil
                 }

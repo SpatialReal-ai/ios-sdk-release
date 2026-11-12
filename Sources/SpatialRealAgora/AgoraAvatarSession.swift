@@ -6,15 +6,18 @@ import SpatialRealAgoraSEI
 import UIKit
 import os
 
-/// 怎么进 Agora 频道。
+/// How the session gets into the Agora channel.
 ///
-/// - `join`:SDK 自己建引擎(直播场景、主播角色)并加入频道。适合只用 Agora 看形象的 app。
-/// - `shared`:app 已经有一个在频道里的 `AgoraRtcEngineKit`(一个 app 一个引擎;agent 类 app 自己加入以发布麦克风)。
-///   SDK 只接管这个引擎的编码视频帧回调(`setEncodedVideoFrameDelegate`),静掉形象那一路的音频、只要它的编码帧;
-///   进出频道、麦克风、引擎的 delegate 都还是 app 的。频道场景须是直播、角色主播(观众会多 0.3–0.4 s 缓冲)。
+/// - `join`: the SDK creates its own engine (live-broadcasting profile, broadcaster role) and joins the channel.
+///   Use this when your app only uses Agora to show the avatar.
+/// - `shared`: your app already has an `AgoraRtcEngineKit` in the channel (one engine per app; for example an agent
+///   app that joins itself to publish the microphone). The SDK takes over only the engine's encoded video frame
+///   callback (`setEncodedVideoFrameDelegate`), mutes the avatar user's audio, and subscribes to its encoded frames
+///   only. Joining and leaving, the microphone, and the engine delegate stay with your app. The channel must use the
+///   live-broadcasting profile with the broadcaster role (the audience role adds 0.3–0.4 s of buffering).
 ///
-/// `avatarUid` 必填:形象在频道里的 uid(你的服务端 agent 起形象时选定的那个,1...4294967295);其他 uid 的视频一概不看
-/// (对齐 Web `agora.avatarUid` / Android)。`uid` 是本端的 uid,0 = 让 Agora 分配。
+/// `avatarUid` is required: the avatar's uid in the channel (the one your server-side agent chose when it started the
+/// avatar, 1...4294967295). Video from any other uid is ignored. `uid` is the local uid; 0 lets Agora assign one.
 public enum AgoraConnection {
     case join(appId: String, channel: String, token: String?, avatarUid: UInt, uid: UInt = 0)
     case shared(engine: AgoraRtcEngineKit, avatarUid: UInt)
@@ -27,12 +30,14 @@ public enum AgoraConnection {
     }
 }
 
-/// Agora 路由:你的服务端 agent(如 TEN 扩展)让后端把形象发布进 Agora 频道,形象那路 H.264 视频的 SEI 里
-/// 同时带着动画和形象说话的音频(Opus,带样本时间线)。本端从编码帧回调里读 SEI,交给宿主模式播放,
-/// 音频和嘴型在同一条样本时钟上(不播 Agora 自己那一路音频)。
+/// Options for the Agora route. Your server-side agent asks SpatialReal to publish the avatar into an Agora channel.
+/// The SEI of the avatar's H.264 video carries both the animation and the avatar's speech audio (Opus, with a sample
+/// timeline). The SDK reads the SEI from the encoded frame callback and plays it in host mode, so audio and lip sync
+/// share one sample clock. The avatar user's regular Agora audio track is not played.
 ///
-/// - `mic`(只对 `.join` 有效):`.required`(默认)加入时发布麦克风,没有权限抛 `mic-denied`;`.optional` 没权限就不发布;
-///   `.manual` 不碰麦,自己用 `AgoraAvatarSession.engine`。`.shared` 时麦克风完全由 app 管。
+/// - `mic` (`.join` only): `.required` (default) publishes the microphone on join and throws `mic-denied` without
+///   permission; `.optional` skips publishing when permission is missing; `.manual` leaves the microphone alone so you
+///   can drive it through `AgoraAvatarSession.engine`. With `.shared`, your app fully owns the microphone.
 public struct AgoraAvatarSessionOptions {
     public let avatarId: String
     public let credential: String
@@ -50,7 +55,8 @@ public struct AgoraAvatarSessionOptions {
 }
 
 public extension SpatialReal {
-    /// 创建 Agora 路由会话。形象资源在这里下载(和 HostAvatarSession 一样);`.join` 时引擎在这里建好,频道在 `start()` 时才进。
+    /// Creates an Agora-route session. Avatar assets are downloaded here (as with `HostAvatarSession`). With `.join`
+    /// the engine is created here; the channel is joined only in `start()`.
     func createSession(_ options: AgoraAvatarSessionOptions) async throws -> AgoraAvatarSession {
         let avatarUid = options.agora.avatarUid
         guard avatarUid > 0, avatarUid <= UInt(UInt32.max) else { throw SpatialRealError(.invalidParams, "`agora.avatarUid` must be 1...4294967295.") }
@@ -65,12 +71,13 @@ public extension SpatialReal {
 }
 
 @MainActor public final class AgoraAvatarSession {
-    /// 宿主模式播放器的采样率:SEI 里的 Opus 是 48 kHz 单声道。
+    /// Sample rate of the host-mode player: the Opus audio in the SEI is 48 kHz mono.
     public static let sampleRate = 48000
     static let joinTimeout: TimeInterval = 15
 
-    /// 底下的 Agora 引擎:`.shared` 时就是你传进来的那个。给你自己的麦克风、数据和 UI 用;
-    /// 别替换它的编码视频帧回调,也别打开形象那一路的音频(SDK 已接管)。`.join` 时 SDK 是它的 delegate。
+    /// The underlying Agora engine; with `.shared` it is the one you passed in. Use it for your own microphone, data and
+    /// UI. Do not replace its encoded video frame delegate or unmute the avatar user's audio (the SDK owns both).
+    /// With `.join`, the SDK is the engine's delegate.
     public let engine: AgoraRtcEngineKit
 
     private let host: HostAvatarSession
@@ -87,7 +94,7 @@ public extension SpatialReal {
     private var errorListeners: [UUID: (SpatialRealError) -> Void] = [:]
     private var configuredUid: UInt?
 
-    // 诊断计数(demo 定时打印)
+    // Diagnostic counters (printed periodically by the demo).
     var dbgSeiFrames = 0, dbgPayloads = 0, dbgBadPayloads = 0, dbgTurns = 0, dbgAudioYielded = 0, dbgFramesYielded = 0
     var dbgLastError: String?
 
@@ -119,7 +126,7 @@ public extension SpatialReal {
         set { host.volume = newValue }
     }
 
-    /// 形象的 uid(`options.agora.avatarUid`)。
+    /// The avatar's uid (`options.agora.avatarUid`).
     public var avatarUid: UInt { options.agora.avatarUid }
 
     public func onState(_ listener: @escaping (SessionStateChange) -> Void) -> @MainActor () -> Void { host.onState(listener) }
@@ -134,7 +141,8 @@ public extension SpatialReal {
         for l in errorListeners.values { l(e) }
     }
 
-    /// 一行状态:绑定的 uid、SEI / 回合计数、源时间线统计。给 demo / 日志用,格式不保证稳定。
+    /// One-line status: bound uid, SEI and turn counters, source timeline stats. For demos and logs only; the format
+    /// is not stable.
     public func debugSnapshot() -> String {
         let st = timeline.stats
         var s = "joined=\(joined) avatarUid=\(options.agora.avatarUid) sei=\(dbgSeiFrames) payloads=\(dbgPayloads) bad=\(dbgBadPayloads) "
@@ -145,7 +153,9 @@ public extension SpatialReal {
         return s
     }
 
-    /// 先起宿主播放器,再接管编码帧回调;`.join` 时加入频道(主播角色),按 `mic` 发布麦克风。任一步失败都退回 idle 并抛错。
+    /// Starts the host player, then takes over the encoded frame callback. With `.join`, joins the channel as
+    /// broadcaster and publishes the microphone according to `mic`. If any step fails, the session returns to idle
+    /// and the error is thrown.
     public func start() async throws {
         try await host.start()
         do {
@@ -168,13 +178,14 @@ public extension SpatialReal {
         }
     }
 
-    /// 离开频道(`.join`)/ 交还编码帧回调(`.shared`),结束播放。
+    /// Leaves the channel (`.join`) or releases the encoded frame callback (`.shared`), and ends playback.
     public func end() async throws {
         await teardownAgora()
         try await host.end()
     }
 
-    /// 离开频道、释放视图;`.join` 时销毁 SDK 建的引擎。之后这个对象不能再用。
+    /// Leaves the channel and releases the view. With `.join`, also destroys the engine the SDK created. The object
+    /// cannot be used afterwards.
     public func dispose() async {
         await teardownAgora()
         await host.dispose()
@@ -182,14 +193,15 @@ public extension SpatialReal {
         if ownsEngine { AgoraRtcEngineKit.destroy() }
     }
 
-    /// 打断:丢掉未播的音频和帧,回到待机;被切断那句后面重复到达的数据不会再把它开起来。
+    /// Interrupts: drops unplayed audio and frames and returns to idle. Retransmitted data for the interrupted turn
+    /// that arrives later does not restart it.
     public func interrupt() throws {
         try host.interrupt()
         timeline.interrupt()
         sink.close()
     }
 
-    /// 开/关发布到频道里的麦克风(`.join`;需要麦克风权限)。
+    /// Turns publishing of the microphone into the channel on or off (`.join`; requires microphone permission).
     public func setMicrophone(enabled: Bool) async throws {
         if enabled, !(await Self.recordPermission()) {
             throw SpatialRealError(.micDenied, "Microphone permission was not granted.")
@@ -200,7 +212,7 @@ public extension SpatialReal {
         if rc != 0 { throw SpatialRealError(.connectionFailed, "Agora updateChannel failed (\(rc)).") }
     }
 
-    // MARK: - 频道
+    // MARK: - Channel
 
     private func join(channel: String, token: String?, uid: UInt) async throws {
         var publishMic = false
@@ -258,7 +270,8 @@ public extension SpatialReal {
         }
     }
 
-    /// 形象那一路:只要编码帧(不解码那张无意义的画面),它自己的音频静掉(音频在 SEI 里)。
+    /// Avatar user: subscribe to encoded frames only (the picture itself carries no content, so it is not decoded)
+    /// and mute its audio track (the audio travels in the SEI).
     private func configureAvatar(_ uid: UInt) {
         guard configuredUid != uid else { return }
         configuredUid = uid
@@ -278,7 +291,7 @@ public extension SpatialReal {
         if ownsEngine {
             if joined { engine.leaveChannel(nil) }
         } else if let uid = configuredUid {
-            // 共享引擎:把我们改过的那一路还原
+            // Shared engine: restore the avatar user's settings we changed.
             engine.muteRemoteAudioStream(uid, mute: false)
             engine.setRemoteVideoSubscriptionOptions(uid, options: AgoraVideoSubscriptionOptions())
         }
@@ -297,7 +310,7 @@ public extension SpatialReal {
         }
     }
 
-    // MARK: - 来自回调线程的事件(都已切到主线程)
+    // MARK: - Events from the callback thread (already hopped to the main thread)
 
     fileprivate func handle(_ batch: AgoraBridge.Batch) {
         guard host.state == .live else { return }
@@ -313,11 +326,11 @@ public extension SpatialReal {
             joined = true
             resumeJoin(.success(()))
         case let .userJoined(uid):
-            // 形象(重新)进频道:再设一次它那一路的订阅选项和静音
+            // The avatar (re)joined the channel: reapply its subscription options and mute.
             if uid == options.agora.avatarUid { configuredUid = nil; configureAvatar(uid) }
         case let .userOffline(uid):
             guard uid == options.agora.avatarUid else { return }
-            // 形象走了:正在收的那一轮按已有的收尾,忘掉流;下次它再发布时重新开始
+            // The avatar left: forget the streams; start over the next time it publishes.
             timeline.reset()
             sink.close()
             configuredUid = nil
@@ -338,8 +351,9 @@ public extension SpatialReal {
         }
     }
 
-    /// 源时间线下面的宿主管线:iOS 的宿主会话不接受"空块开回合",回合在第一块音频到达时才在播放器里开;
-    /// 之前到的帧先攒着,音频一到就跟在后面喂进去。
+    /// Host pipeline below the source timeline. The host session does not accept an empty chunk to open a turn, so
+    /// a turn opens in the player only when its first audio chunk arrives. Frames that arrive earlier are buffered
+    /// and fed right after that audio.
     @MainActor private final class HostSink: SourceTimelineSink {
         private unowned let session: AgoraAvatarSession
         private var audioStarted = false
@@ -402,8 +416,9 @@ public extension SpatialReal {
     }
 }
 
-/// Agora 回调线程上的那一半:读 SEI、解封套、解 protobuf(都是无状态的纯函数),结果切到主线程交给会话。
-/// 同时是 `.join` 时引擎的 delegate。
+/// The half that runs on Agora's callback thread: reads the SEI, decodes the envelope and the protobuf (all
+/// stateless pure functions), then hands the result to the session on the main thread. Also serves as the engine
+/// delegate with `.join`.
 final class AgoraBridge: NSObject, AgoraEncodedVideoFrameDelegate, AgoraRtcEngineDelegate, @unchecked Sendable {
     struct Batch: Sendable {
         var messages: [(RtcSourceMessage, Bool)] = []
@@ -454,7 +469,7 @@ final class AgoraBridge: NSObject, AgoraEncodedVideoFrameDelegate, AgoraRtcEngin
         return true
     }
 
-    // MARK: AgoraRtcEngineDelegate(`.join` 时)
+    // MARK: AgoraRtcEngineDelegate (`.join` only)
 
     private func post(_ ev: EngineEvent) {
         DispatchQueue.main.async { [weak self] in
