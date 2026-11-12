@@ -64,6 +64,34 @@ try await session.start()      // the avatar's audio and animation arrive in the
 
 The avatar's speech is played from the SEI, in sync with the animation; Agora's own copy of it is muted. Join as a broadcaster on a live-broadcasting channel. The Agora route is SwiftPM only (not in the CocoaPods spec).
 
+### Pipecat route
+
+If your [Pipecat](https://github.com/pipecat-ai/pipecat) bot runs the [pipecat-spatialreal](https://github.com/SpatialReal-ai/pipecat-spatialreal) processor (0.2.0 or later) and your app talks to it with Pipecat's Daily transport, add the **SpatialRealPipecat** product as well (1.0.0-beta.8 or later). It is a source target in this package: it depends on `SpatialRealSDK`, on [pipecat-ai/pipecat-client-ios-daily](https://github.com/pipecat-ai/pipecat-client-ios-daily) 1.3 or later and on [apple/swift-protobuf](https://github.com/apple/swift-protobuf), so only add it when you need it.
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SpatialRealSDK", package: "ios-sdk-release"),
+    .product(name: "SpatialRealPipecat", package: "ios-sdk-release")
+])
+```
+
+```swift
+import PipecatClientIOS
+import PipecatClientIOSDaily
+import SpatialRealPipecat
+
+let transport = DailyTransport()
+let session = try await sr.createSession(PipecatAvatarSessionOptions(
+    avatarId: avatarId, credential: sessionToken, container: containerView, transport: transport))
+try await session.start()      // no network; your PipecatClient keeps the call
+let client = PipecatClient(options: PipecatClientOptions(transport: transport, enableMic: true))
+client.delegate = self         // in your PipecatClientDelegate:
+//   func onBotReady(botReadyData: BotReadyData) { session.handleBotReady() }
+//   func onServerMessage(data: Any) { session.handleServerMessage(data) }
+```
+
+The processor sends the bot's voice with the animation; the avatar plays both in sync and switches the bot's Daily audio track off while it does, so the voice is never heard twice. Whenever that stream breaks, Daily plays the bot's track again. Echo cancellation stays with Daily: never enable voice processing on another audio engine in your app while the call runs. The Pipecat route is SwiftPM only (not in the CocoaPods spec).
+
 ### CocoaPods
 
 ```ruby
