@@ -25,7 +25,9 @@ public enum PipecatVoiceRoute: Sendable, Equatable {
 
 /// The call side: the bot's audio track and the message channel back to the processor.
 @MainActor protocol BotAudioLink: AnyObject {
-    func sendAudioRequest()
+    /// Sends `AudioRequest` to the processor; false when the transport refused it (no call, or the
+    /// call has ended), so nothing will answer it.
+    func sendAudioRequest() -> Bool
     func setBotAudioSubscribed(_ subscribed: Bool)
 }
 
@@ -133,11 +135,13 @@ public enum PipecatVoiceRoute: Sendable, Equatable {
         isBotReady = false
     }
 
-    /// The session ended: drop everything and give the voice back to the call.
+    /// The session ended: drop everything and give the voice back to the call. The bot's readiness
+    /// belonged to that call, so a session started again waits for the next call's bot-ready.
     func deactivate() {
         dropAll(interruptPlayer: false)
         setRoute(.call)
         mode = .off
+        isBotReady = false
         active = false
     }
 
@@ -193,7 +197,12 @@ public enum PipecatVoiceRoute: Sendable, Equatable {
     private func requestIfReady() {
         guard active, isBotReady, mode == .off else { return }
         mode = .requested
-        link.sendAudioRequest()
+        guard link.sendAudioRequest() else {
+            // Nothing will answer a request that never left: the next bot-ready or reconnect asks again.
+            logger.info("the audio request could not be sent; it is sent again at the next bot-ready or reconnect")
+            mode = .off
+            return
+        }
     }
 
     private var isQuiet: Bool {
